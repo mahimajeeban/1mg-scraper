@@ -1,0 +1,1 @@
+It is a scrapper tool to scap the 1mg site to get the medecine name and it's details.
