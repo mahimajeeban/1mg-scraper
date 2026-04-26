@@ -10,10 +10,19 @@ import traceback
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import TimeoutException
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 def setup_driver():
     options = Options()
-    # options.add_argument("--headless=new")
+    is_headless = os.environ.get("HEADLESS", "False").lower() == "true"
+    if is_headless:
+        options.add_argument("--headless=new")
     options.add_argument("--disable-gpu")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
@@ -51,53 +60,81 @@ def setup_session():
     return session
 
 def fetch_product_links(driver, base_url, max_products):
-    """Fetches up to `max_products` product URLs from the search pages by paginating."""
+    """Fetches up to `max_products` product URLs from the search pages by scrolling."""
     links = []
+    print(f"Loading search page: {base_url}")
     
-    print(f"Loading search pages...")
-    page_number = 1
-    max_pages = 5 # Safety limit
+    try:
+        driver.get(base_url)
+    except TimeoutException:
+        print(f"Page load timed out, attempting to proceed...")
+        
+    # Initial wait to let page load completely
+    try:
+        WebDriverWait(driver, 30).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/otc/'], a[href*='/drugs/']"))
+        )
+    except TimeoutException:
+        print("Timeout waiting for initial product links to load.")
+        
+    time.sleep(3) # Additional wait for JS execution
     
-    while len(links) < max_products and page_number <= max_pages:
-        url = f"{base_url}&pageNumber={page_number}" if "?" in base_url else f"{base_url}?pageNumber={page_number}"
-        print(f"Loading page {page_number}: {url}")
-        try:
-            try:
-                driver.get(url)
-            except TimeoutException:
-                print(f"Page load timed out for page {page_number}, attempting to proceed...")
-                
-            time.sleep(6) # Wait for page to render Javascript
+    if "Just a moment..." in driver.page_source or "Cloudflare" in driver.page_source:
+        print("Cloudflare bot protection triggered.")
+        return links
+        
+    last_height = driver.execute_script("return document.body.scrollHeight")
+    scroll_attempts = 0
+    max_scroll_attempts = 50 # Prevent infinite looping
+    
+    while len(links) < max_products and scroll_attempts < max_scroll_attempts:
+        soup = BeautifulSoup(driver.page_source, "html.parser")
+        
+        # Find all potential product links
+        a_tags = soup.find_all("a", href=True)
+        new_links_found = False
+        
+        for tag in a_tags:
+            href = tag['href']
+            if "/otc/" in href or "/drugs/" in href:
+                full_url = href if href.startswith("http") else f"https://www.1mg.com{href}"
+                if full_url not in links:
+                    links.append(full_url)
+                    new_links_found = True
+                    if len(links) >= max_products:
+                        break
+                        
+        print(f"Collected {len(links)} links so far...")
+        
+        if len(links) >= max_products:
+            break
             
-            if "Just a moment..." in driver.page_source or "Cloudflare" in driver.page_source:
-                print("Cloudflare bot protection triggered.")
+        # Detect the last loaded product element and scroll just until it is visible
+        product_elements = driver.find_elements(By.CSS_SELECTOR, "a[href*='/otc/'], a[href*='/drugs/']")
+        if product_elements:
+            last_product = product_elements[-1]
+            # Scroll to the last product so it's centered in the viewport
+            driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", last_product)
+        else:
+            # Fallback small scroll
+            driver.execute_script("window.scrollBy(0, 500);")
+            
+        time.sleep(3) # Wait briefly for new products to load
+        
+        new_height = driver.execute_script("return document.body.scrollHeight")
+        
+        # If height hasn't changed and no new links were found, we might be at the end
+        if new_height == last_height and not new_links_found:
+            # Try a small scroll to trigger just in case
+            driver.execute_script("window.scrollBy(0, 200);")
+            time.sleep(3)
+            new_height = driver.execute_script("return document.body.scrollHeight")
+            if new_height == last_height:
+                print("Reached end of page or no more products loading.")
                 break
                 
-            soup = BeautifulSoup(driver.page_source, "html.parser")
-            
-            # Find all potential product links
-            a_tags = soup.find_all("a", href=True)
-            new_links_found = False
-            for tag in a_tags:
-                href = tag['href']
-                if "/otc/" in href or "/drugs/" in href:
-                    full_url = href if href.startswith("http") else f"https://www.1mg.com{href}"
-                    if full_url not in links:
-                        links.append(full_url)
-                        new_links_found = True
-                        if len(links) >= max_products:
-                            break
-                            
-            if not new_links_found:
-                print(f"No new links found on page {page_number}.")
-            else:
-                print(f"Collected {len(links)} links so far...")
-                
-            page_number += 1
-            
-        except Exception as e:
-            print(f"Error fetching product links on page {page_number}: {e}")
-            break
+        last_height = new_height
+        scroll_attempts += 1
             
     return links[:max_products]
 
@@ -106,10 +143,14 @@ def parse_product_page(driver, url):
     try:
         try:
             driver.get(url)
+            # Explicitly wait for product title to appear
+            WebDriverWait(driver, 30).until(
+                EC.presence_of_element_located((By.TAG_NAME, "h1"))
+            )
         except TimeoutException:
             print(f"Page load timed out for {url}, attempting to proceed...")
             
-        time.sleep(2) # Give DOM time to update
+        time.sleep(1) # Small fallback wait for DOM complete update
         
         if "Just a moment..." in driver.page_source or "Cloudflare" in driver.page_source:
             print("Cloudflare bot protection triggered on product page.")
@@ -285,12 +326,9 @@ def save_data(data, output_file):
 
 
 def main():
-    base_url = "https://www.1mg.com/search/all?name=mankind"
-    
-    # Test length for automated testing. You can change this to 100 for production.
-    max_products = 100 
-    
-    output_dir = "mankind"
+    base_url = os.environ.get("BASE_URL", "https://www.1mg.com/search/all?name=mankind")
+    max_products = int(os.environ.get("MAX_PRODUCTS", "100"))
+    output_dir = os.environ.get("OUTPUT_FOLDER", "mankind")
     images_dir = os.path.join(output_dir, "images")
     output_excel = os.path.join(output_dir, "data.xlsx")
     
@@ -335,6 +373,10 @@ def main():
             print("No product data collected.")
             
     finally:
+        is_headless = os.environ.get("HEADLESS", "False").lower() == "true"
+        if not is_headless:
+            print("Browser is still open for you to inspect. Press Enter in this terminal to close the browser.")
+            input("Press Enter to close browser...")
         print("Closing browser driver.")
         driver.quit()
 
