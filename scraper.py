@@ -158,9 +158,9 @@ def parse_product_page(driver, url):
 
         soup = BeautifulSoup(driver.page_source, "html.parser")
         
-        company_name = "N/A"
+        company_name = "Mankind"
         medicine_name = "N/A"
-        composition = "N/A"
+        composition = ""
         price = "N/A"
         description_text = "N/A"
         image_urls = set()
@@ -171,36 +171,44 @@ def parse_product_page(driver, url):
             medicine_name = h1.get_text(strip=True)
             
         # 2. Company Name
-        brand_div = soup.find("a", href=lambda h: h and "/manufacturer/" in h)
-        if not brand_div:
-            brand_div = soup.find(lambda tag: tag.name == "div" and tag.get("class") and any("brand" in c.lower() or "manufacturer" in c.lower() for c in tag.get("class", [])))
-        if brand_div:
-            company_name = brand_div.get_text(strip=True)
+        company_name = "Mankind"
             
         # 3. Composition / Salt
-        salt_div = soup.find("a", href=lambda h: h and "/generics/" in h)
-        if not salt_div:
+        salt_tags = soup.find_all("a", href=lambda h: h and "/generics/" in h)
+        if salt_tags:
+            salts = []
+            for tag in salt_tags:
+                txt = tag.get_text(strip=True)
+                if txt and txt not in salts:
+                    salts.append(txt)
+            composition = " + ".join(salts)
+        else:
             salt_div = soup.find(lambda tag: tag.name == "div" and tag.get("class") and any("salt" in c.lower() for c in tag.get("class", [])))
-        if salt_div:
-            composition = salt_div.get_text(strip=True)
+            if salt_div:
+                composition = salt_div.get_text(strip=True)
             
         # 4. Price
-        # Look for a span containing price
-        price_wrapper = soup.find("span", text=re.compile(r'MRP|₹'))
-        if price_wrapper:
-            price_text = price_wrapper.find_parent().get_text(separator=' ', strip=True) if price_wrapper.find_parent() else price_wrapper.get_text(strip=True)
-            match = re.search(r'₹\s?[0-9,.]+', price_text)
+        price_text_found = ""
+        price_divs = soup.find_all(lambda tag: tag.name in ["span", "div"] and tag.get("class") and any("price" in c.lower() or "mrp" in c.lower() for c in tag.get("class", [])))
+        for div in price_divs:
+            t = div.get_text(separator=' ', strip=True)
+            if '₹' in t:
+                price_text_found = t
+                break
+                
+        if not price_text_found:
+            for tag in soup.find_all(["span", "div"]):
+                t = tag.get_text(separator=' ', strip=True)
+                if '₹' in t and len(t) < 40 and ('mrp' in t.lower() or 'price' in t.lower()):
+                    price_text_found = t
+                    break
+                    
+        if price_text_found:
+            match = re.search(r'₹\s?([0-9,.]+)', price_text_found)
             if match:
-                price = match.group(0).replace('₹', '').replace(',', '').strip()
-        
-        if price == "N/A":
-             # fallback finding element by class containing price
-             price_div = soup.find(lambda tag: tag.name == "span" and tag.get("class") and any("price" in c.lower() or "mrp" in c.lower() for c in tag.get("class", [])))
-             if price_div:
-                 price_text = price_div.get_text(strip=True)
-                 match = re.search(r'₹[0-9,.]+', price_text)
-                 if match:
-                     price = match.group(0).replace('₹', '').replace(',', '').strip()
+                price_str = match.group(1).replace(',', '').strip()
+                try: price = float(price_str)
+                except ValueError: price = price_str
                      
         # 5. Description
         desc_div = soup.find("div", {"id": "aboutexpand"})
@@ -210,17 +218,28 @@ def parse_product_page(driver, url):
             desc_div = soup.find(lambda tag: tag.name == "div" and tag.get("class") and any("description" in c.lower() for c in tag.get("class", [])))
             
         if desc_div:
-             texts = desc_div.stripped_strings
-             description_text = "\n".join(texts)
-             if not description_text:
+             raw_text = " ".join(desc_div.stripped_strings)
+             clean_text = re.sub(r'\s+', ' ', raw_text).strip()
+             if clean_text:
+                 description_text = f"{medicine_name}\n{clean_text}"
+             else:
                  description_text = "N/A"
              
         # 6. Images
         img_tags = soup.find_all("img")
         for img in img_tags:
             src = img.get("src")
-            if src and "http" in src and ("/image/upload/" in src):
-                image_urls.add(src)
+            if not src or "http" not in src:
+                continue
+            
+            classes = img.get("class", [])
+            # 1mg product images usually have "picture-image" or "thumbnail" in class
+            is_product_img = any("picture-image" in c.lower() or "thumbnail" in c.lower() for c in classes)
+            
+            if ("/image/upload/" in src) or is_product_img or ("w_380" in src) or ("w_700" in src):
+                # Ensure we don't accidentally grab small social icons
+                if not any(icon in src.lower() for icon in ['facebook', 'twitter', 'linkedin', 'instagram', 'youtube']):
+                    image_urls.add(src)
                 
         # Ensure we don't have empty critical fields
         if not medicine_name or medicine_name == "N/A":
@@ -261,9 +280,11 @@ def download_images(session, image_urls, product_name, save_dir):
     # Optional logic: just limit to say max 5 images if there are too many thumbnails
     image_urls = list(image_urls)[:10]
     
-    for i, url in enumerate(image_urls, start=1):
-        filename_base = cleaned_name if len(image_urls) == 1 else f"{cleaned_name}{i}"
-        filename = f"{filename_base}.png"
+    for i, url in enumerate(image_urls):
+        if i == 0:
+            filename = f"{cleaned_name}.png"
+        else:
+            filename = f"{cleaned_name}{i}.png"
         filepath = os.path.join(save_dir, filename)
         
         # Avoid duplicate downloads across different products referring same image
@@ -290,7 +311,8 @@ def download_images(session, image_urls, product_name, save_dir):
 
 def save_data(data, output_file):
     """Saves data to an Excel file with text-wrapping enabled."""
-    df = pd.DataFrame(data)
+    columns_order = ["companyName", "medicineName", "composition", "price", "description", "imageLink"]
+    df = pd.DataFrame(data, columns=columns_order)
     
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
     
@@ -362,8 +384,8 @@ def main():
                 
             img_urls = product_info.pop("image_urls", [])
             # still use requests session for fast image downloading
-            image_names = download_images(session, img_urls, product_info['medicineName'], images_dir)
-            product_info['imageName'] = image_names
+            download_images(session, img_urls, product_info['medicineName'], images_dir)
+            product_info['imageLink'] = ",\n".join(img_urls) if img_urls else ""
             
             all_products_data.append(product_info)
             
