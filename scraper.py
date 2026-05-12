@@ -384,8 +384,13 @@ def main():
                 
             img_urls = product_info.pop("image_urls", [])
             # still use requests session for fast image downloading
-            download_images(session, img_urls, product_info['medicineName'], images_dir)
-            product_info['imageLink'] = ",\n".join(img_urls) if img_urls else ""
+            saved_filenames_str = download_images(session, img_urls, product_info['medicineName'], images_dir)
+            
+            if saved_filenames_str:
+                formatted_paths = [f"./images/{fname}" for fname in saved_filenames_str.split(',')]
+                product_info['imageLink'] = ",\n".join(formatted_paths)
+            else:
+                product_info['imageLink'] = ""
             
             all_products_data.append(product_info)
             
