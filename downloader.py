@@ -10,9 +10,6 @@ class ImageDownloader:
     
     def __init__(self, session_manager):
         self.session_manager = session_manager
-        # Keep track of all downloaded files across the session to prevent overwrites
-        # if multiple products somehow resolve to the same cleaned name.
-        self.global_saved_filenames = set()
 
     def clean_filename(self, name):
         return re.sub(r'[^a-zA-Z0-9]+', '', name)
@@ -26,26 +23,16 @@ class ImageDownloader:
             cleaned_name = "product"
             
         os.makedirs(save_dir, exist_ok=True)
-        saved_filenames_for_this_product = []
+        saved_filenames = []
         image_urls = list(image_urls)[:10]
         session = self.session_manager.get_session()
         
         for i, url in enumerate(image_urls):
-            base_filename = f"{cleaned_name}.png" if i == 0 else f"{cleaned_name}{i}.png"
-            
-            # Ensure uniqueness globally in the session
-            counter = 1
-            filename = base_filename
-            while filename in self.global_saved_filenames:
-                filename = f"{cleaned_name}_{counter}.png"
-                counter += 1
-                
+            filename = f"{cleaned_name}.png" if i == 0 else f"{cleaned_name}{i}.png"
             filepath = os.path.join(save_dir, filename)
             
-            # Also check filesystem just in case of previous runs
-            if os.path.exists(filepath):
-                 saved_filenames_for_this_product.append(filename)
-                 self.global_saved_filenames.add(filename)
+            if filename in saved_filenames or os.path.exists(filepath):
+                 saved_filenames.append(filename)
                  continue
                 
             try:
@@ -54,11 +41,9 @@ class ImageDownloader:
                 with open(filepath, 'wb') as f:
                     for chunk in r.iter_content(1024):
                         f.write(chunk)
-                        
-                saved_filenames_for_this_product.append(filename)
-                self.global_saved_filenames.add(filename)
+                saved_filenames.append(filename)
                 time.sleep(0.2)
             except Exception as e:
                 logger.error(f"Failed to download image {url}: {e}")
                 
-        return ",".join(saved_filenames_for_this_product)
+        return ",".join(saved_filenames)
