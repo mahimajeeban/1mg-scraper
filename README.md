@@ -28,10 +28,15 @@ git clone <repository_url>
 cd 1mg-scraper
 ```
 
-### 2. Install Dependencies
-Install the required Python packages using pip:
+### 2. Create Virtual Environment & Install Dependencies
+It is highly recommended to use a virtual environment. Create and activate it using:
 ```bash
-pip install -r requirements.txt
+python3 -m venv venv
+source venv/bin/activate
+```
+Then install the required Python packages:
+```bash
+pip3 install -r requirements.txt
 ```
 
 ### 3. Create `.env` file
@@ -45,9 +50,9 @@ HEADLESS=False
 *(Set `HEADLESS=True` if you do not want the browser window to open during scraping).*
 
 ## Run Instructions
-Run the main script using python:
+Ensure your virtual environment is activated, then run the main script using python3:
 ```bash
-python scraper.py
+python3 scraper.py
 ```
 
 ## Output Description
