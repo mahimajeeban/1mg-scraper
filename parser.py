@@ -47,6 +47,21 @@ class ProductParser:
 
         time.sleep(1)
         
+        # Attempt to click "Read More" or "Show More" buttons to expand descriptions
+        try:
+            driver.execute_script("""
+                var elements = document.querySelectorAll("span, div, a, button, label");
+                for (var i = 0; i < elements.length; i++) {
+                    var text = elements[i].innerText ? elements[i].innerText.toLowerCase().trim() : "";
+                    if (text === "read more" || text === "show more" || text === "view more") {
+                        elements[i].click();
+                    }
+                }
+            """)
+            time.sleep(1) # Give it a second to expand
+        except Exception as e:
+            pass
+            
         if "Just a moment..." in driver.page_source or "Cloudflare" in driver.page_source:
             logger.error("Cloudflare bot protection triggered on product page.")
             return None
@@ -83,15 +98,35 @@ class ProductParser:
             
         # 3. Price
         price_text_found = ""
-        price_divs = soup.find_all(lambda tag: tag.name in ["span", "div"] and tag.get("class") and any("price" in c.lower() or "mrp" in c.lower() for c in tag.get("class", [])))
-        for div in price_divs:
-            t = div.get_text(separator=' ', strip=True)
-            if '₹' in t:
-                price_text_found = t
-                break
-                
+        
+        # Method 1: Try the slashed MRP price which is the actual MRP when discounted
+        exact_mrp_tag = soup.find(class_=re.compile(r'DrugPriceBox__slashed-price', re.I))
+        if exact_mrp_tag:
+            price_text_found = exact_mrp_tag.get_text(separator=' ', strip=True)
+            
+        # Method 2: Try to find the exact price box classes known for 1mg (if no discount, this is the MRP)
+        if not price_text_found:
+            exact_price_tag = soup.find(class_=re.compile(r'DrugPriceBox__best-price|DrugPriceBox__price|PriceBoxPlanOption__offer-price', re.I))
+            if exact_price_tag:
+                price_text_found = exact_price_tag.get_text(separator=' ', strip=True)
+
+        # Method 3: Fallback searching all price-related classes, but strictly exclude substitute items
+        if not price_text_found:
+            price_divs = soup.find_all(lambda tag: tag.name in ["span", "div"] and tag.get("class") and any("price" in c.lower() or "mrp" in c.lower() for c in tag.get("class", [])))
+            for div in price_divs:
+                classes = " ".join(div.get("class", [])).lower()
+                if "substitute" in classes:
+                    continue
+                t = div.get_text(separator=' ', strip=True)
+                if '₹' in t:
+                    price_text_found = t
+                    break
+                    
         if not price_text_found:
             for tag in soup.find_all(["span", "div"]):
+                classes = " ".join(tag.get("class", [])).lower() if tag.get("class") else ""
+                if "substitute" in classes:
+                    continue
                 t = tag.get_text(separator=' ', strip=True)
                 if '₹' in t and len(t) < 40 and ('mrp' in t.lower() or 'price' in t.lower()):
                     price_text_found = t
@@ -111,11 +146,20 @@ class ProductParser:
         if not desc_div:
             desc_div = soup.find("div", {"class": re.compile(r"ProductDescription|product-description", re.I)})
         if not desc_div:
+            # Look for Product Introduction content block
+            intro_title = soup.find("h2", string=re.compile(r"Product introduction", re.I))
+            if intro_title and intro_title.find_next_sibling("div", class_=re.compile(r"DrugOverview__content", re.I)):
+                desc_div = intro_title.find_next_sibling("div")
+        if not desc_div:
             desc_div = soup.find(lambda tag: tag.name == "div" and tag.get("class") and any("description" in c.lower() for c in tag.get("class", [])))
             
         if desc_div:
              raw_text = " ".join(desc_div.stripped_strings)
              clean_text = re.sub(r'\s+', ' ', raw_text).strip()
+             
+             # Remove leftover toggle button texts
+             clean_text = re.sub(r'(?i)\b(read more|show more|view more|show less)\b', '', clean_text).strip()
+             
              if clean_text:
                  description_text = f"{medicine_name}\n{clean_text}"
              
