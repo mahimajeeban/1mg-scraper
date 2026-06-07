@@ -1,6 +1,7 @@
 import requests
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
+from requests.exceptions import ConnectionError, Timeout
 from utils import setup_logger
 
 logger = setup_logger(__name__)
@@ -26,10 +27,11 @@ class SessionManager:
         })
         
         retry_strategy = Retry(
-            total=5,
-            backoff_factor=2,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["HEAD", "GET", "OPTIONS"]
+            total=5,  # Total number of retries
+            backoff_factor=2,  # Wait 2, 4, 8, 16, 32 seconds between retries
+            status_forcelist=[429, 500, 502, 503, 504],  # Retry on these HTTP status codes
+            allowed_methods=["HEAD", "GET", "OPTIONS"],
+            raise_on_status=False  # Don't raise exception, let urllib3 handle retries
         )
         adapter = HTTPAdapter(max_retries=retry_strategy)
         session.mount("https://", adapter)
